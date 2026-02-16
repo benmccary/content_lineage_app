@@ -1,0 +1,15 @@
+# Python stuff
+__pycache__/
+*.py[cod]
+.venv/
+
+# Environment / Secrets
+.env
+
+# Data Files (Scrub everything in data/ and all JSON/CSV)
+data/
+*.json
+*.csv
+
+# Exceptions (If you want to keep a sample file for others to see)
+# !data/sample_data.json

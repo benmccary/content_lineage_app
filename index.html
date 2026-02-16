@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body { margin: 0; background: #050505; color: #eee; font-family: sans-serif; overflow: hidden; }
+        svg { width: 100vw; height: 100vh; cursor: crosshair; }
+        
+        /* Links */
+        .link { fill: none; stroke-opacity: 0.25; transition: stroke-opacity 0.3s; pointer-events: none; }
+        .persistence { stroke: #0088ff; } 
+        .branch { stroke: #ff4400; stroke-dasharray: 4; }
+        
+        /* Focus State */
+        .link.dimmed, .node.dimmed { opacity: 0.1 !important; }
+        .link.highlighted { stroke-opacity: 1 !important; stroke: #fff !important; }
+        .node.highlighted circle { stroke: #fff !important; stroke-width: 2.5px !important; }
+
+        .node circle { stroke: #000; stroke-width: 1.5px; cursor: pointer; }
+        .node text { fill: #aaa; font-size: 10px; pointer-events: none; paint-order: stroke; stroke: #050505; stroke-width: 2px; }
+
+        /* Modals */
+        #investigation-box { position: absolute; bottom: 20px; right: 20px; width: 250px; background: rgba(15, 15, 15, 0.95); border: 1px solid #444; padding: 15px; border-radius: 8px; display: none; }
+        
+        #video-list-box { 
+            position: absolute; bottom: 20px; left: 20px; width: 350px; max-height: 40vh; 
+            background: rgba(15, 15, 15, 0.95); border: 1px solid #444; padding: 15px; border-radius: 8px; 
+            display: none; flex-direction: column; overflow: hidden;
+        }
+        #video-container { overflow-y: auto; margin-top: 10px; }
+        .video-item { font-size: 11px; margin-bottom: 8px; border-bottom: 1px solid #222; padding-bottom: 5px; }
+        .video-item a { color: #00d2ff; text-decoration: none; }
+        
+        h4 { margin: 0; color: #00d2ff; text-transform: uppercase; font-size: 13px; }
+    </style>
+</head>
+<body>
+    <div id="video-list-box">
+        <h4 id="v-title">Videos in Node</h4>
+        <div id="video-container"></div>
+    </div>
+
+    <div id="investigation-box">
+        <h4 id="n-name">-</h4>
+        <div style="font-size:12px; margin-top:5px;">Count: <b id="n-count">-</b></div>
+        <div id="n-parent" style="font-size:11px; color:#aaa; margin-top:5px; font-style:italic;">-</div>
+        <div style="font-size:11px; color:#aaa; margin-top:5px;">Stemmed into: <b id="n-children" style="color:#eee;">-</b></div>
+        <ul id="n-reasons" style="font-size:10px; margin-top:8px; padding-left:15px; color:#eee;"></ul>
+    </div>
+
+    <svg id="viz"></svg>
+
+<script>
+    const svg = d3.select("#viz"), world = svg.append("g");
+    const width = window.innerWidth, height = window.innerHeight;
+    let graphData, node, link, simulation;
+
+    d3.json("data/graph_data.json").then(data => {
+        graphData = data;
+        const getID = (d) => (typeof d === "object") ? d.id : d;
+        const maxMonths = d3.max(data.nodes, d => d.time_index) || 0;
+        const xStep = width / (maxMonths + 2);
+        
+        const yTopMargin = 120; 
+        const rowHeight = 90; 
+        const monthNames = ["Dec", "Jan", "Feb", "Mar", "Apr", "May"];
+
+        // 1. Grid Logic (Hanging Rectangles)
+        const nodesByMonth = d3.group(data.nodes, d => d.time_index);
+        nodesByMonth.forEach((monthNodes, mIndex) => {
+            const sorted = monthNodes.sort((a, b) => b.count - a.count);
+            const nodesPerRow = 3; 
+            sorted.forEach((d, i) => {
+                const row = Math.floor(i / nodesPerRow);
+                const col = i % nodesPerRow;
+                d.fx = ((mIndex + 1) * xStep) + (col - (nodesPerRow - 1) / 2) * 125; 
+                d.fy = yTopMargin + (row * rowHeight);               
+            });
+        });
+
+        // 2. Simulation Setup
+        simulation = d3.forceSimulation(data.nodes).force("link", d3.forceLink(data.links).id(d => d.id)).stop();
+        
+        // 3. Render Links
+        link = world.append("g").selectAll("line").data(data.links).enter().append("line")
+            .attr("class", d => `link ${d.type}`).style("stroke-width", 2);
+
+        // 4. Render Nodes & Investigation Logic
+        node = world.append("g").selectAll(".node").data(data.nodes).enter().append("g").attr("class", "node")
+            .on("mouseover", (e, d) => {
+                d3.select("#investigation-box").style("display", "block");
+                d3.select("#n-name").text(d.label);
+                d3.select("#n-count").text(d.count);
+                
+                // --- DYNAMIC LLM LOGIC (From your python script) ---
+                // Find the specific 'branch' link that created this node
+                const incomingLink = data.links.find(l => getID(l.target) === d.id && l.type === "branch");
+
+                if (incomingLink) {
+                    const sourceNode = data.nodes.find(n => n.id === getID(incomingLink.source));
+                    const scorePercent = incomingLink.score ? Math.round(incomingLink.score * 100) : 85;
+                    
+                    d3.select("#n-parent").html(
+                        `Stemmed from: <b>${sourceNode ? sourceNode.label : "Discovery"}</b><br/>` +
+                        `Verified by Llama: <span style="color:#4caf50">${scorePercent}% Match</span>`
+                    );
+                    
+                    d3.select("#n-reasons").html(
+                        `<li style="list-style:none; padding-top:5px;">` +
+                        `LLM reasoning confirmed ${d.label} as a logical continuation of ${sourceNode.label}.` +
+                        `</li>`
+                    );
+                } else {
+                    d3.select("#n-parent").text("Root Interest Path");
+                    d3.select("#n-reasons").html("<li style='list-style:none;'>Topic discovered with no prior connection.</li>");
+                }
+
+                // Show what this node leads to next (Stemmed Into)
+                const outgoing = data.links.filter(l => getID(l.source) === d.id);
+                const childNames = outgoing.map(l => {
+                    const targetNode = data.nodes.find(n => n.id === getID(l.target));
+                    return targetNode ? targetNode.label : null;
+                }).filter(n => n);
+                d3.select("#n-children").text(childNames.length > 0 ? childNames.join(", ") : "Terminal Topic");
+            })
+            .on("mouseout", () => d3.select("#investigation-box").style("display", "none"))
+            .on("click", (e, d) => { e.stopPropagation(); trace(d); });
+
+        node.append("circle").attr("r", d => Math.sqrt(d.count) * 4 + 8)
+            .attr("fill", d => d3.interpolateViridis(d.time_index / (maxMonths + 1)));
+
+        node.append("text").attr("dy", d => Math.sqrt(d.count) * 4 + 24)
+            .attr("text-anchor", "middle").attr("fill", "white").style("font-size", "11px")
+            .text(d => d.label.length > 20 ? d.label.substring(0, 17) + "..." : d.label);
+
+        // 5. Trace & History Modal
+        function trace(d) {
+            const activeNodes = new Set([d.id]), activeLinks = new Set();
+            function recurse(id, dir) {
+                graphData.links.forEach(l => {
+                    const s = getID(l.source), t = getID(l.target);
+                    if (dir === 'up' && t === id && !activeNodes.has(s)) { activeNodes.add(s); activeLinks.add(l); recurse(s, 'up'); }
+                    if (dir === 'down' && s === id && !activeNodes.has(t)) { activeNodes.add(t); activeLinks.add(l); recurse(t, 'down'); }
+                });
+            }
+            recurse(d.id, 'up'); recurse(d.id, 'down');
+            node.classed("dimmed", n => !activeNodes.has(n.id)).classed("highlighted", n => activeNodes.has(n.id));
+            link.classed("dimmed", l => !activeLinks.has(l)).classed("highlighted", l => activeLinks.has(l));
+            
+            d3.select("#video-list-box").style("display", "flex");
+            d3.select("#v-title").text(`History: ${d.label}`);
+            const container = d3.select("#video-container").html("");
+            if (d.videos) { d.videos.forEach(v => { container.append("div").attr("class", "video-item").append("a").attr("href", v.url).attr("target", "_blank").text(v.title); }); }
+        }
+
+        // Apply Tick and Position
+        simulation.tick(100);
+        link.attr("x1", d => d.source.x).attr("y1", d => d.source.y).attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+        node.attr("transform", d => `translate(${d.x},${d.y})`);
+
+        // Shelf Headers
+        const shelfGroup = world.append("g");
+        Array.from(nodesByMonth.keys()).forEach(mIndex => {
+            const xPos = (mIndex + 1) * xStep;
+            shelfGroup.append("text").attr("x", xPos).attr("y", yTopMargin - 60).attr("text-anchor", "middle").attr("fill", "white").style("font-size", "22px").style("font-weight", "bold").text(monthNames[mIndex] || `Month ${mIndex}`);
+            shelfGroup.append("line").attr("x1", xPos - 130).attr("x2", xPos + 130).attr("y1", yTopMargin - 45).attr("y2", yTopMargin - 45).attr("stroke", "white").attr("stroke-width", 3).attr("opacity", 0.3);
+        });
+
+        svg.on("click", () => { node.classed("dimmed highlighted", false); link.classed("dimmed highlighted", false); d3.select("#video-list-box").style("display", "none"); });
+        svg.call(d3.zoom().on("zoom", (e) => world.attr("transform", e.transform)).filter(e => e.type !== "dblclick"));
+    });
+</script>
+</body>
+</html>

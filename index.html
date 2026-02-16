@@ -58,42 +58,43 @@
     d3.json("data/graph_data.json").then(data => {
         graphData = data;
         const getID = (d) => (typeof d === "object") ? d.id : d;
-        const maxMonths = d3.max(data.nodes, d => d.time_index) || 0;
-        const xStep = width / (maxMonths + 2);
         
+        // --- UPDATED FOR WEEKLY ---
+        const maxWeeks = d3.max(data.nodes, d => d.time_index) || 0;
+        const xStep = 200; // Fixed width to handle many weeks
+        const weekLabels = data.weeks || []; 
+        // --------------------------
+
         const yTopMargin = 120; 
         const rowHeight = 90; 
-        const monthNames = ["Dec", "Jan", "Feb", "Mar", "Apr", "May"];
 
-        // 1. Grid Logic (Hanging Rectangles)
-        const nodesByMonth = d3.group(data.nodes, d => d.time_index);
-        nodesByMonth.forEach((monthNodes, mIndex) => {
-            const sorted = monthNodes.sort((a, b) => b.count - a.count);
-            const nodesPerRow = 3; 
+        // 1. Grid Logic (Updated to use time_index)
+        const nodesByTime = d3.group(data.nodes, d => d.time_index);
+        nodesByTime.forEach((timeNodes, tIndex) => {
+            const sorted = timeNodes.sort((a, b) => b.count - a.count);
+            const nodesPerRow = 2; // Tighter columns for weekly
             sorted.forEach((d, i) => {
                 const row = Math.floor(i / nodesPerRow);
                 const col = i % nodesPerRow;
-                d.fx = ((mIndex + 1) * xStep) + (col - (nodesPerRow - 1) / 2) * 125; 
+                d.fx = ((tIndex + 1) * xStep) + (col - (nodesPerRow - 1) / 2) * 70; 
                 d.fy = yTopMargin + (row * rowHeight);               
             });
         });
 
-        // 2. Simulation Setup
+        // 2. Simulation Setup (Original)
         simulation = d3.forceSimulation(data.nodes).force("link", d3.forceLink(data.links).id(d => d.id)).stop();
         
-        // 3. Render Links
+        // 3. Render Links (Original)
         link = world.append("g").selectAll("line").data(data.links).enter().append("line")
             .attr("class", d => `link ${d.type}`).style("stroke-width", 2);
 
-        // 4. Render Nodes & Investigation Logic
+        // 4. Render Nodes & Investigation Logic (Original - UNTOUCHED)
         node = world.append("g").selectAll(".node").data(data.nodes).enter().append("g").attr("class", "node")
             .on("mouseover", (e, d) => {
                 d3.select("#investigation-box").style("display", "block");
                 d3.select("#n-name").text(d.label);
                 d3.select("#n-count").text(d.count);
                 
-                // --- DYNAMIC LLM LOGIC (From your python script) ---
-                // Find the specific 'branch' link that created this node
                 const incomingLink = data.links.find(l => getID(l.target) === d.id && l.type === "branch");
 
                 if (incomingLink) {
@@ -115,7 +116,6 @@
                     d3.select("#n-reasons").html("<li style='list-style:none;'>Topic discovered with no prior connection.</li>");
                 }
 
-                // Show what this node leads to next (Stemmed Into)
                 const outgoing = data.links.filter(l => getID(l.source) === d.id);
                 const childNames = outgoing.map(l => {
                     const targetNode = data.nodes.find(n => n.id === getID(l.target));
@@ -127,13 +127,13 @@
             .on("click", (e, d) => { e.stopPropagation(); trace(d); });
 
         node.append("circle").attr("r", d => Math.sqrt(d.count) * 4 + 8)
-            .attr("fill", d => d3.interpolateViridis(d.time_index / (maxMonths + 1)));
+            .attr("fill", d => d3.interpolateViridis(d.time_index / (maxWeeks + 1)));
 
         node.append("text").attr("dy", d => Math.sqrt(d.count) * 4 + 24)
             .attr("text-anchor", "middle").attr("fill", "white").style("font-size", "11px")
             .text(d => d.label.length > 20 ? d.label.substring(0, 17) + "..." : d.label);
 
-        // 5. Trace & History Modal
+        // 5. Trace & History Modal (Original - UNTOUCHED)
         function trace(d) {
             const activeNodes = new Set([d.id]), activeLinks = new Set();
             function recurse(id, dir) {
@@ -153,17 +153,32 @@
             if (d.videos) { d.videos.forEach(v => { container.append("div").attr("class", "video-item").append("a").attr("href", v.url).attr("target", "_blank").text(v.title); }); }
         }
 
-        // Apply Tick and Position
         simulation.tick(100);
         link.attr("x1", d => d.source.x).attr("y1", d => d.source.y).attr("x2", d => d.target.x).attr("y2", d => d.target.y);
         node.attr("transform", d => `translate(${d.x},${d.y})`);
 
-        // Shelf Headers
+        // 6. Shelf Headers (Updated for Weekly formatting)
         const shelfGroup = world.append("g");
-        Array.from(nodesByMonth.keys()).forEach(mIndex => {
-            const xPos = (mIndex + 1) * xStep;
-            shelfGroup.append("text").attr("x", xPos).attr("y", yTopMargin - 60).attr("text-anchor", "middle").attr("fill", "white").style("font-size", "22px").style("font-weight", "bold").text(monthNames[mIndex] || `Month ${mIndex}`);
-            shelfGroup.append("line").attr("x1", xPos - 130).attr("x2", xPos + 130).attr("y1", yTopMargin - 45).attr("y2", yTopMargin - 45).attr("stroke", "white").attr("stroke-width", 3).attr("opacity", 0.3);
+        weekLabels.forEach((weekStr, wIndex) => {
+            const xPos = (wIndex + 1) * xStep;
+            
+            // Format 2026-02-01 -> Feb 01
+            const dateObj = new Date(weekStr);
+            const displayDate = d3.timeFormat("%b %d")(dateObj);
+
+            shelfGroup.append("text")
+                .attr("x", xPos)
+                .attr("y", yTopMargin - 60)
+                .attr("text-anchor", "middle")
+                .attr("fill", "white")
+                .style("font-size", "14px")
+                .style("font-weight", "bold")
+                .text(displayDate);
+
+            shelfGroup.append("line")
+                .attr("x1", xPos - 70).attr("x2", xPos + 70)
+                .attr("y1", yTopMargin - 45).attr("y2", yTopMargin - 45)
+                .attr("stroke", "white").attr("stroke-width", 2).attr("opacity", 0.3);
         });
 
         svg.on("click", () => { node.classed("dimmed highlighted", false); link.classed("dimmed highlighted", false); d3.select("#video-list-box").style("display", "none"); });

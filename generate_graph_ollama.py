@@ -1,5 +1,5 @@
 import json, os, requests, numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # --- CONFIG ---
 OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
@@ -8,7 +8,7 @@ MODEL_NAME = "llama3.1:latest"
 
 MIN_VIEWS = 3
 SIMILARITY_THRESHOLD = 0.75
-MERGE_THRESHOLD = 0.85
+MERGE_THRESHOLD = 0.92
 FORBIDDEN = ["general", "miscellaneous", "other", "unknown", "clips", "shorts", "vlog"]
 
 def ask_llm_reasoning(parent, child):
@@ -58,10 +58,18 @@ def generate():
                     if prev_vec:
                         score = np.dot(curr_vec, prev_vec) / (np.linalg.norm(curr_vec) * np.linalg.norm(prev_vec))
                         
-                    if score > MERGE_THRESHOLD and existing_topic != "General" and interest != "General":
-                        canonical_map[raw_interest] = existing_topic # Use raw_interest here to map the original name
+                    # Only merge if the score is very high AND they don't have conflicting core words
+                    if score > 0.95: # Increased threshold
+                        canonical_map[raw_interest] = existing_topic
                         interest = existing_topic
                         break
+                    elif score > 0.80:
+                        # If they are somewhat similar, let's double check they aren't totally different subjects
+                        subjects = ["racing", "boxing", "coding", "cooking", "gaming"]
+                        if any(s in interest.lower() for s in subjects) and any(s in existing_topic.lower() for s in subjects):
+                            if not any(s in interest.lower() and s in existing_topic.lower() for s in subjects):
+                                # Conflict detected (e.g., one has 'racing', one has 'boxing') -> DO NOT MERGE
+                                continue
         
         # Check what we are actually getting from metadata_map.json
         percent = (index + 1) / len(history) * 100
@@ -70,8 +78,13 @@ def generate():
         if interest.lower() in FORBIDDEN: continue
 
         ts = item['timestamp']
-        month_str = datetime.fromisoformat(ts.replace('Z', '+00:00')).strftime("%Y-%m")
-        node_id = f"{interest}_{month_str}"
+        dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+
+        # Snap to the previous Sunday
+        days_since_sunday = (dt.weekday() + 1) % 7 
+        sunday_start = dt - timedelta(days=days_since_sunday)
+        time_str = sunday_start.strftime('%Y-%m-%d') # The new column key
+        node_id = f"{interest}_{time_str}"
 
         # Progress Counter
         percent = (index + 1) / len(history) * 100
@@ -121,18 +134,29 @@ def generate():
         })
         interest_nodes[node_id]["count"] += 1
 
-    all_months = sorted(list(set(datetime.fromisoformat(n['birth'].replace('Z', '+00:00')).strftime("%Y-%m") for n in interest_nodes.values())))
-    month_to_idx = {m: i for i, m in enumerate(all_months)}
+    # Use the new format for the final output
+    all_weeks = sorted(list(set(
+        (datetime.fromisoformat(n['birth'].replace('Z', '+00:00')) - 
+         timedelta(days=(datetime.fromisoformat(n['birth'].replace('Z', '+00:00')).weekday() + 1) % 7)
+        ).strftime("%Y-%m-%d") 
+        for n in interest_nodes.values()
+    )))
+    
+    week_to_idx = {w: i for i, w in enumerate(all_weeks)}
 
     final_nodes = [n for n in interest_nodes.values() if n['count'] >= MIN_VIEWS]
     for n in final_nodes:
-        m_str = datetime.fromisoformat(n['birth'].replace('Z', '+00:00')).strftime("%Y-%m")
-        n['time_index'] = month_to_idx[m_str]
+        # Snap birth time to Sunday again to find the correct index
+        dt_n = datetime.fromisoformat(n['birth'].replace('Z', '+00:00'))
+        sunday_n = (dt_n - timedelta(days=(dt_n.weekday() + 1) % 7)).strftime("%Y-%m-%d")
+        n['time_index'] = week_to_idx[sunday_n]
+        n['time_key'] = sunday_n # Helpful for the HTML side
 
     f_ids = {n['id'] for n in final_nodes}
     final_links = [l for l in links if l['source'] in f_ids and l['target'] in f_ids]
 
-    json.dump({"nodes": final_nodes, "links": final_links, "months": all_months}, open('data/graph_data.json', 'w'), indent=2)
+    # Save with "weeks" key instead of "months"
+    json.dump({"nodes": final_nodes, "links": final_links, "weeks": all_weeks}, open('data/graph_data.json', 'w'), indent=2)
     json.dump(embed_cache, open('data/embedding_cache.json', 'w'))
     json.dump(logic_cache, open('data/reasoning_cache.json', 'w'))
     print(f"\n\nSuccess! Created {len(final_nodes)} nodes.")
